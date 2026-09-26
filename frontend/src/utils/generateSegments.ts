@@ -2,24 +2,11 @@
  * Client-side segment generator — Vercel-compatible port of server/mockData.js
  *
  * Loads benchmarks.json (real PINN output, pre-computed offline) via fetch,
- * then builds the 60-segment pipeline using the same curve math and YOLO
- * class profiles as the Express server. No backend required.
+ * then builds the pipeline using location-specific curve math and YOLO
+ * class profiles. No backend required.
  */
 import type { SegmentData, CVOutput } from '../types';
-
-const SEGMENT_COUNT = 60;
-const SEGMENT_LENGTH = 2; // metres
-
-// ── Curve helpers ──────────────────────────────────────────────────────────────
-const amplitudeY = 3, frequencyY = 0.08;
-const amplitudeZ = 8, frequencyZ = 0.12;
-
-function getPoint(t: number): [number, number, number] {
-    return [t, Math.sin(t * frequencyY) * amplitudeY, Math.sin(t * frequencyZ) * amplitudeZ];
-}
-function getTangent(t: number): [number, number, number] {
-    return [1, Math.cos(t * frequencyY) * frequencyY * amplitudeY, Math.cos(t * frequencyZ) * frequencyZ * amplitudeZ];
-}
+import type { LocationConfig } from './locations';
 
 // ── YOLO class profiles (mirrors server/mockData.js) ──────────────────────────
 const YOLO_CLASS_PROFILES = [
@@ -41,15 +28,16 @@ const YOLO_CLASS_PROFILES = [
       base_mask_px: [] as number[][] },
 ];
 
-function pickYoloProfile(segmentId: string, integrity: number) {
+function pickYoloProfile(segmentId: string, integrity: number, rotation: number) {
     const num = parseInt(segmentId.replace(/\D/g, ''), 10) || 0;
     if (integrity > 0.78 && num % 3 !== 0) return YOLO_CLASS_PROFILES[YOLO_CLASS_PROFILES.length - 1];
     const defect = YOLO_CLASS_PROFILES.slice(0, -1);
-    return defect[num % defect.length];
+    // Apply rotation so different locations show different defect patterns
+    return defect[(num + rotation) % defect.length];
 }
 
-function generateCVOutput(segmentId: string, integrity: number): CVOutput {
-    const profile = pickYoloProfile(segmentId, integrity);
+function generateCVOutput(segmentId: string, integrity: number, rotation: number): CVOutput {
+    const profile = pickYoloProfile(segmentId, integrity, rotation);
     const jitter = () => (Math.random() - 0.5) * 0.06;
     const conf = Math.min(0.99, Math.max(0.50, profile.base_conf + jitter()));
     const corr = Math.max(0, profile.base_corr_pct * (0.9 + Math.random() * 0.2));
@@ -81,28 +69,59 @@ function generateCVOutput(segmentId: string, integrity: number): CVOutput {
     };
 }
 
-/**
- * Fetch benchmarks.json and generate all pipeline segments.
- * Returns a flat array ready to pass to usePipelineStore.setSegments().
- */
-export async function generateSegmentsFromBenchmarks(): Promise<SegmentData[]> {
+// Cache the raw benchmarks so we only fetch once per session
+let _benchmarksCache: unknown[] | null = null;
+
+async function loadBenchmarks(): Promise<unknown[]> {
+    if (_benchmarksCache) return _benchmarksCache;
     const base = import.meta.env.BASE_URL;
     const res = await fetch(`${base}benchmarks.json`);
     if (!res.ok) throw new Error(`Failed to load benchmarks.json: ${res.status}`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const benchmarks: any[] = await res.json();
+    _benchmarksCache = await res.json() as unknown[];
+    return _benchmarksCache;
+}
 
-    if (benchmarks.length < SEGMENT_COUNT) {
-        throw new Error(`benchmarks.json has ${benchmarks.length} entries, need >= ${SEGMENT_COUNT}`);
+/**
+ * Fetch benchmarks.json and generate all pipeline segments for a given location.
+ * Returns a flat array ready to pass to usePipelineStore.setSegments().
+ */
+export async function generateSegmentsFromBenchmarks(loc: LocationConfig): Promise<SegmentData[]> {
+    const benchmarks = await loadBenchmarks() as Record<string, unknown>[];
+
+    const needed = loc.segmentCount + loc.benchmarkOffset;
+    if (benchmarks.length < needed) {
+        throw new Error(
+            `benchmarks.json has ${benchmarks.length} entries, need >= ${needed} for location "${loc.id}"`
+        );
+    }
+
+    const { amplitudeY, frequencyY, amplitudeZ, frequencyZ } = loc;
+
+    function getPoint(t: number): [number, number, number] {
+        return [t, Math.sin(t * frequencyY) * amplitudeY, Math.sin(t * frequencyZ) * amplitudeZ];
+    }
+    function getTangent(t: number): [number, number, number] {
+        return [
+            1,
+            Math.cos(t * frequencyY) * frequencyY * amplitudeY,
+            Math.cos(t * frequencyZ) * frequencyZ * amplitudeZ,
+        ];
     }
 
     const segments: SegmentData[] = [];
-    let currentT = -(SEGMENT_COUNT * SEGMENT_LENGTH) / 2;
+    let currentT = -(loc.segmentCount * loc.segmentLength) / 2;
 
-    for (let i = 0; i < SEGMENT_COUNT; i++) {
+    for (let i = 0; i < loc.segmentCount; i++) {
         const segmentId = `SEG-${String(i + 1).padStart(3, '0')}`;
-        const { xai, ...pinnFields } = benchmarks[i];
-        const integrity: number = pinnFields.integrity;
+        const bm = benchmarks[loc.benchmarkOffset + i] as Record<string, unknown> & {
+            xai: unknown;
+            integrity: number;
+        };
+        const { xai, ...pinnFields } = bm;
+
+        // Apply location-specific integrity bias (e.g. older pipeline = lower overall)
+        const rawIntegrity = pinnFields.integrity as number;
+        const integrity = Math.max(0.05, Math.min(1.0, rawIntegrity * loc.integrityBias));
 
         const position = getPoint(currentT);
         const direction = getTangent(currentT);
@@ -112,15 +131,15 @@ export async function generateSegmentsFromBenchmarks(): Promise<SegmentData[]> {
             position,
             direction,
             integrity,
-            cv: generateCVOutput(segmentId, integrity),
-            pinn: { ...pinnFields, segment_id: segmentId },
-            xai: { ...xai, segment_id: segmentId },
+            cv: generateCVOutput(segmentId, integrity, loc.yoloRotation),
+            pinn: { ...pinnFields, integrity, segment_id: segmentId } as SegmentData['pinn'],
+            xai: { ...(xai as object), segment_id: segmentId } as SegmentData['xai'],
             lastUpdated: new Date().toISOString(),
         });
 
         const tangent = getTangent(currentT);
         const tangentLength = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
-        currentT += SEGMENT_LENGTH / tangentLength;
+        currentT += loc.segmentLength / tangentLength;
     }
 
     return segments;

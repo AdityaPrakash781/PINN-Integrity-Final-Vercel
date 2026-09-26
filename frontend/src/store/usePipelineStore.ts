@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type { SegmentData, FeedbackEntry, CVOutput, PINNOutput, XAIOutput } from '../types/index.js';
+import { DEFAULT_LOCATION } from '../utils/locations';
+import type { LocationConfig } from '../utils/locations';
 
 interface PipelineStore {
     // State
@@ -8,6 +10,7 @@ interface PipelineStore {
     feedbackQueue: FeedbackEntry[];
     wsConnected: boolean;
     lastUpdate: string | null;
+    locationId: LocationConfig['id'];
 
     // Actions
     setSegments: (segments: SegmentData[]) => void;
@@ -18,6 +21,7 @@ interface PipelineStore {
     updateCV: (cv: CVOutput) => void;
     updatePINN: (pinn: PINNOutput) => void;
     updateXAI: (xai: XAIOutput) => void;
+    setLocation: (id: LocationConfig['id']) => void;
 }
 
 export const usePipelineStore = create<PipelineStore>((set, get) => ({
@@ -27,6 +31,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     feedbackQueue: [],
     wsConnected: false,
     lastUpdate: null,
+    locationId: DEFAULT_LOCATION,
 
     // Actions
     setSegments: (segments) => {
@@ -95,5 +100,10 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
             });
             set({ segments, lastUpdate: new Date().toISOString() });
         }
+    },
+
+    setLocation: (id) => {
+        // Clear segments + selection so App.tsx triggers a fresh data load
+        set({ locationId: id, segments: new Map(), selectedSegmentId: null });
     },
 }));

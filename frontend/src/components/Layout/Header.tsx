@@ -1,6 +1,7 @@
 import { usePipelineStore } from '../../store/usePipelineStore';
 import { useThemeStore } from '../../store/useThemeStore';
 import { formatTime } from '../../utils/colors';
+import LocationSelector from './LocationSelector';
 
 /**
  * Application header — segment health summary and connection status.
@@ -29,7 +30,10 @@ export default function Header() {
                     </p>
                 </div>
 
-                <div className="flex items-center gap-5">
+                {/* Location selector — placed centre-left */}
+                <LocationSelector />
+
+                <div className="flex items-center gap-5 ml-auto">
                     {/* Benchmark summary */}
                     <div className="flex items-center gap-3 text-xs">
                         <span className="flex items-center gap-1.5">
