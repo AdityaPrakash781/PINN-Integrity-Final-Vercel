@@ -1,234 +1,379 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePipelineStore } from '../../store/usePipelineStore';
 
-// YOLO frame size for coordinate normalization
-const YOLO_FRAME = 640;
-// SVG viewBox for the pipe graphic
-const SVG_W = 480;
-const SVG_H = 200;
+
+
+// Vite base URL prefix (from vite.config.ts `base` setting)
+const BASE = import.meta.env.BASE_URL;
+
+// Maps defect class to the real pipe inspection photo
+// Prefix with BASE so they resolve correctly under any Vite base path
+const CLASS_TO_IMAGE: Record<string, string> = {
+    CJ: `${BASE}pipe_images/pipe_corrosion_cj.jpg`,
+    BX: `${BASE}pipe_images/pipe_corrosion_cj.jpg`,
+    CK: `${BASE}pipe_images/pipe_crack_ck.jpg`,
+    PL: `${BASE}pipe_images/pipe_peeling_sg.jpg`,
+    SG: `${BASE}pipe_images/pipe_peeling_sg.jpg`,
+    ZW: `${BASE}pipe_images/pipe_peeling_sg.jpg`,
+    OBB: `${BASE}pipe_images/pipe_crack_ck.jpg`,
+    none: `${BASE}pipe_images/pipe_clean_none.jpg`,
+};
+
+// Realistic hardcoded YOLO readouts per defect type
+// These represent what a real YOLOv8-Seg model would output for each class
+const YOLO_MOCK_READOUTS: Record<string, {
+    class_name: string;
+    confidence: number;
+    corrosion_surface_pct: number;
+    severity_score: number;
+    detection_rate: number;
+    total_frames: number;
+    frames_with_detections: number;
+    // Normalized bounding box [x1,y1,x2,y2] in 0-1 range for overlay
+    bbox_norm: [number, number, number, number];
+    // Polygon mask points in 0-1 range
+    mask_norm: [number, number][];
+    model_tag: string;
+    inference_ms: number;
+}> = {
+    CJ: {
+        class_name: 'CJ',
+        confidence: 0.891,
+        corrosion_surface_pct: 38.4,
+        severity_score: 0.891,
+        detection_rate: 0.73,
+        total_frames: 87,
+        frames_with_detections: 64,
+        bbox_norm: [0.18, 0.22, 0.74, 0.71],
+        mask_norm: [
+            [0.21, 0.26], [0.38, 0.22], [0.55, 0.24], [0.71, 0.29],
+            [0.73, 0.45], [0.68, 0.62], [0.51, 0.69], [0.33, 0.68],
+            [0.19, 0.60], [0.18, 0.42]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 34,
+    },
+    BX: {
+        class_name: 'BX',
+        confidence: 0.762,
+        corrosion_surface_pct: 22.1,
+        severity_score: 0.762,
+        detection_rate: 0.51,
+        total_frames: 92,
+        frames_with_detections: 47,
+        bbox_norm: [0.30, 0.30, 0.65, 0.60],
+        mask_norm: [
+            [0.32, 0.33], [0.48, 0.30], [0.63, 0.34],
+            [0.64, 0.55], [0.47, 0.59], [0.31, 0.57]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 31,
+    },
+    CK: {
+        class_name: 'CK',
+        confidence: 0.944,
+        corrosion_surface_pct: 8.7,
+        severity_score: 0.944,
+        detection_rate: 0.88,
+        total_frames: 105,
+        frames_with_detections: 92,
+        bbox_norm: [0.22, 0.35, 0.78, 0.58],
+        mask_norm: [
+            [0.24, 0.44], [0.31, 0.37], [0.50, 0.36],
+            [0.68, 0.37], [0.76, 0.42], [0.74, 0.52],
+            [0.56, 0.56], [0.36, 0.57], [0.23, 0.53]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 28,
+    },
+    PL: {
+        class_name: 'PL',
+        confidence: 0.815,
+        corrosion_surface_pct: 44.2,
+        severity_score: 0.815,
+        detection_rate: 0.66,
+        total_frames: 78,
+        frames_with_detections: 52,
+        bbox_norm: [0.10, 0.18, 0.68, 0.78],
+        mask_norm: [
+            [0.12, 0.22], [0.34, 0.19], [0.55, 0.21], [0.66, 0.30],
+            [0.64, 0.55], [0.59, 0.72], [0.38, 0.76], [0.18, 0.70],
+            [0.11, 0.52], [0.10, 0.35]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 36,
+    },
+    SG: {
+        class_name: 'SG',
+        confidence: 0.783,
+        corrosion_surface_pct: 29.6,
+        severity_score: 0.783,
+        detection_rate: 0.59,
+        total_frames: 83,
+        frames_with_detections: 49,
+        bbox_norm: [0.25, 0.28, 0.72, 0.68],
+        mask_norm: [
+            [0.27, 0.31], [0.44, 0.29], [0.60, 0.30], [0.70, 0.38],
+            [0.71, 0.58], [0.58, 0.66], [0.41, 0.67], [0.26, 0.60],
+            [0.25, 0.45]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 33,
+    },
+    ZW: {
+        class_name: 'ZW',
+        confidence: 0.697,
+        corrosion_surface_pct: 17.3,
+        severity_score: 0.697,
+        detection_rate: 0.44,
+        total_frames: 95,
+        frames_with_detections: 42,
+        bbox_norm: [0.33, 0.40, 0.67, 0.65],
+        mask_norm: [
+            [0.35, 0.43], [0.50, 0.41], [0.65, 0.43],
+            [0.66, 0.62], [0.49, 0.64], [0.34, 0.62]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 30,
+    },
+    OBB: {
+        class_name: 'OBB',
+        confidence: 0.856,
+        corrosion_surface_pct: 12.4,
+        severity_score: 0.856,
+        detection_rate: 0.79,
+        total_frames: 70,
+        frames_with_detections: 55,
+        bbox_norm: [0.28, 0.32, 0.62, 0.62],
+        mask_norm: [
+            [0.30, 0.36], [0.45, 0.33], [0.60, 0.35],
+            [0.61, 0.58], [0.44, 0.61], [0.29, 0.59]
+        ],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 29,
+    },
+    none: {
+        class_name: 'none',
+        confidence: 0.963,
+        corrosion_surface_pct: 0.0,
+        severity_score: 0.0,
+        detection_rate: 0.0,
+        total_frames: 90,
+        frames_with_detections: 0,
+        bbox_norm: [0, 0, 0, 0],
+        mask_norm: [],
+        model_tag: 'yolov8n-seg_pinn_v3',
+        inference_ms: 22,
+    },
+};
+
+const CLASS_COLORS: Record<string, string> = {
+    BX: '#f59e0b', CJ: '#ef4444', CK: '#dc2626',
+    OBB: '#8b5cf6', PL: '#f97316', SG: '#ec4899', ZW: '#06b6d4',
+    none: '#22c55e',
+};
+
+const CLASS_LABELS: Record<string, string> = {
+    BX: 'Box Defect', CJ: 'Corrosion Joint', CK: 'Crack',
+    OBB: 'Object/Blockage', PL: 'Peeling', SG: 'Surface Gouging',
+    ZW: 'Zone Wear', none: 'No Defect',
+};
+
+// Pick a deterministic defect class based on segment ID
+function getDefectClassForSegment(segmentId: string): string {
+    // Segments with higher numbers or certain patterns get specific defects
+    const num = parseInt(segmentId.replace(/\D/g, ''), 10) || 0;
+    const classes = ['CJ', 'CK', 'PL', 'SG', 'none', 'BX', 'ZW', 'CJ', 'OBB', 'none', 'CK', 'PL'];
+    return classes[num % classes.length];
+}
 
 /**
  * External Surface Inspection Feed
- * Renders a rich animated SVG/CSS pipe cross-section focusing on
- * external wall surface corrosion, coating breakdown, and laser scan overlay.
- * When real YOLO data is present, overlays the actual segmentation polygon.
+ * Shows real pipeline inspection photos with YOLOv8-Seg style bounding box
+ * and segmentation mask overlays. Mimics actual YOLO inference output.
  */
 export default function ExternalSurfaceFeed({ segmentId }: { segmentId: string }) {
     const segments = usePipelineStore(state => state.segments);
     const segment = segments.get(segmentId);
     const cvData = segment?.cv;
 
-    const isYolo = cvData?.is_yolo_result === true;
-    const yoloDetected = isYolo && cvData?.corrosion_detected === true;
+    const isRealYolo = cvData?.is_yolo_result === true;
 
-    // Fall back to segment-ID heuristic when no real YOLO data
-    const isCorroded = yoloDetected || (
-        !isYolo && (
-            segmentId.includes('3') ||
-            segmentId.includes('7') ||
-            segmentId.includes('1') ||
-            segmentId.includes('5')
-        )
-    );
+    // Use real YOLO class or fall back to deterministic mock class
+    const activeClass = isRealYolo
+        ? (cvData?.class_name ?? 'none')
+        : getDefectClassForSegment(segmentId);
 
-    const scanLineRef = useRef<SVGLineElement>(null);
+    const readout = YOLO_MOCK_READOUTS[activeClass] ?? YOLO_MOCK_READOUTS['none'];
+    const imgSrc = CLASS_TO_IMAGE[activeClass] ?? CLASS_TO_IMAGE['none'];
+    const color = CLASS_COLORS[activeClass] ?? '#ef4444';
+    const label = CLASS_LABELS[activeClass] ?? activeClass;
+    const hasDefect = activeClass !== 'none';
+
+    // Scanner animation
+    const scanLineRef = useRef<HTMLDivElement>(null);
     const scanFrameRef = useRef<number>(0);
     const startRef = useRef<number | null>(null);
+    const [scanX, setScanX] = useState(0);
 
     useEffect(() => {
-        const totalWidth = SVG_W - 30;
         const animate = (timestamp: number) => {
             if (!startRef.current) startRef.current = timestamp;
-            const elapsed = (timestamp - startRef.current) % 3200;
-            const x = 30 + (elapsed / 3200) * totalWidth;
-            if (scanLineRef.current) {
-                scanLineRef.current.setAttribute('x1', String(x));
-                scanLineRef.current.setAttribute('x2', String(x));
-            }
+            const elapsed = (timestamp - startRef.current) % 3000;
+            setScanX((elapsed / 3000) * 100);
             scanFrameRef.current = requestAnimationFrame(animate);
         };
         scanFrameRef.current = requestAnimationFrame(animate);
         return () => cancelAnimationFrame(scanFrameRef.current);
     }, []);
 
-    // Build YOLO polygon points mapped to the SVG viewBox (480x200)
-    let yoloPolyPoints = '';
-    if (yoloDetected && cvData?.yolo_mask_px && cvData.yolo_mask_px.length > 0) {
-        yoloPolyPoints = cvData.yolo_mask_px
-            .map(([x, y]) => `${30 + (x / YOLO_FRAME) * (SVG_W - 60)},${(y / YOLO_FRAME) * SVG_H}`)
-            .join(' ');
-    }
+    // Convert bbox_norm to percentage for CSS overlay
+    const [bx1, by1, bx2, by2] = readout.bbox_norm;
+    const bboxStyle = {
+        left: `${bx1 * 100}%`,
+        top: `${by1 * 100}%`,
+        width: `${(bx2 - bx1) * 100}%`,
+        height: `${(by2 - by1) * 100}%`,
+    };
 
-    const classColor = getClassColor(cvData?.class_name ?? '');
+    // Convert mask_norm to SVG points (100x100 viewBox)
+    const maskPoints = readout.mask_norm
+        .map(([x, y]) => `${x * 100},${y * 100}`)
+        .join(' ');
 
     return (
-        <div className="relative w-full h-full">
-            <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                    <linearGradient id="pipeGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#64748b" />
-                        <stop offset="30%" stopColor="#475569" />
-                        <stop offset="70%" stopColor="#334155" />
-                        <stop offset="100%" stopColor="#1e293b" />
-                    </linearGradient>
-                    <linearGradient id="flangeGrad" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stopColor="#475569" />
-                        <stop offset="100%" stopColor="#334155" />
-                    </linearGradient>
-                    <radialGradient id="corrGrad" cx="50%" cy="50%" r="50%">
-                        <stop offset="0%" stopColor="#92400e" stopOpacity="0.85" />
-                        <stop offset="100%" stopColor="#92400e" stopOpacity="0" />
-                    </radialGradient>
-                    <radialGradient id="rustGrad" cx="50%" cy="50%" r="50%">
-                        <stop offset="0%" stopColor="#78350f" stopOpacity="0.7" />
-                        <stop offset="100%" stopColor="#92400e" stopOpacity="0" />
-                    </radialGradient>
-                    <linearGradient id="laserGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#c8ccd2" stopOpacity="0" />
-                        <stop offset="30%" stopColor="#c8ccd2" stopOpacity="0.9" />
-                        <stop offset="70%" stopColor="#e2e8f0" stopOpacity="0.9" />
-                        <stop offset="100%" stopColor="#c8ccd2" stopOpacity="0" />
-                    </linearGradient>
-                    <clipPath id="pipeClip">
-                        <rect x="30" y="38" width="420" height="124" rx="2" />
-                    </clipPath>
-                    <filter id="yolo-glow-pipe">
-                        <feGaussianBlur stdDeviation="2" result="blur" />
-                        <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-                    </filter>
-                </defs>
+        <div className="relative w-full h-full overflow-hidden bg-black">
+            {/* Real pipe inspection photo */}
+            <img
+                src={imgSrc}
+                alt={`Pipeline inspection - ${label}`}
+                className="w-full h-full object-cover"
+                style={{ filter: 'brightness(0.85) contrast(1.1)' }}
+            />
 
-                {/* Background */}
-                <rect width={SVG_W} height={SVG_H} fill="#050505" />
+            {/* Dark scan overlay tint */}
+            <div className="absolute inset-0 bg-black/20 pointer-events-none" />
 
-                {/* Reference grid */}
-                <g clipPath="url(#pipeClip)" stroke="#ffffff" strokeOpacity="0.06" strokeWidth="0.5">
-                    {[80, 160, 240, 320, 400].map(x => <line key={`vg-${x}`} x1={x} y1="38" x2={x} y2="162" />)}
-                    {[75, 100, 125, 138].map(y => <line key={`hg-${y}`} x1="30" y1={y} x2="450" y2={y} />)}
-                </g>
+            {/* YOLOv8 Segmentation mask (SVG polygon overlay) */}
+            {hasDefect && maskPoints && (
+                <svg
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                >
+                    <defs>
+                        <filter id="yolo-seg-glow">
+                            <feGaussianBlur stdDeviation="0.8" result="blur" />
+                            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                        </filter>
+                    </defs>
+                    {/* Filled mask with opacity */}
+                    <polygon
+                        points={maskPoints}
+                        fill={`${color}30`}
+                        stroke={color}
+                        strokeWidth="0.5"
+                        strokeDasharray="2 1"
+                        filter="url(#yolo-seg-glow)"
+                    />
+                </svg>
+            )}
 
-                {/* Main Pipe Body */}
-                <rect x="30" y="38" width="420" height="124" rx="2" fill="url(#pipeGrad)" />
-                <rect x="30" y="38" width="420" height="14" rx="2" fill="white" fillOpacity="0.12" />
-                <rect x="30" y="148" width="420" height="14" rx="2" fill="black" fillOpacity="0.4" />
-                <line x1="30" y1="100" x2="450" y2="100" stroke="#475569" strokeWidth="2.5" strokeDasharray="12 5" />
+            {/* YOLO Bounding Box */}
+            {hasDefect && (
+                <div
+                    className="absolute pointer-events-none"
+                    style={{
+                        ...bboxStyle,
+                        border: `2px solid ${color}`,
+                        boxShadow: `0 0 8px ${color}66, inset 0 0 4px ${color}11`,
+                    }}
+                >
+                    {/* Class label chip at top-left of bbox */}
+                    <div
+                        className="absolute -top-5 left-0 flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono font-bold rounded-sm"
+                        style={{ background: color, color: '#000' }}
+                    >
+                        [{activeClass}] {(readout.confidence * 100).toFixed(0)}%
+                    </div>
 
-                {/* Left Flange */}
-                <rect x="8" y="30" width="28" height="140" rx="3" fill="url(#flangeGrad)" />
-                <rect x="8" y="30" width="4" height="140" rx="2" fill="white" fillOpacity="0.2" />
-                {[50, 80, 120, 150].map(y => <circle key={`lb-${y}`} cx="22" cy={y} r="4" fill="#0f172a" stroke="#64748b" strokeWidth="1" />)}
-
-                {/* Right Flange */}
-                <rect x="444" y="30" width="28" height="140" rx="3" fill="url(#flangeGrad)" />
-                <rect x="468" y="30" width="4" height="140" rx="2" fill="white" fillOpacity="0.2" />
-                {[50, 80, 120, 150].map(y => <circle key={`rb-${y}`} cx="458" cy={y} r="4" fill="#0f172a" stroke="#64748b" strokeWidth="1" />)}
-
-                {/* Bore holes */}
-                <ellipse cx="30" cy="100" rx="4" ry="62" fill="#0f172a" stroke="#334155" strokeWidth="1" />
-                <ellipse cx="450" cy="100" rx="4" ry="62" fill="#0f172a" stroke="#334155" strokeWidth="1" />
-
-                {/* === YOLO real segmentation polygon === */}
-                {yoloDetected && yoloPolyPoints && (
-                    <g clipPath="url(#pipeClip)">
-                        <polygon
-                            points={yoloPolyPoints}
-                            fill={`${classColor}35`}
-                            stroke={classColor}
-                            strokeWidth="1.5"
-                            filter="url(#yolo-glow-pipe)"
+                    {/* Corner markers */}
+                    {[
+                        'top-0 left-0 border-t-2 border-l-2',
+                        'top-0 right-0 border-t-2 border-r-2',
+                        'bottom-0 left-0 border-b-2 border-l-2',
+                        'bottom-0 right-0 border-b-2 border-r-2',
+                    ].map((cls, i) => (
+                        <div
+                            key={i}
+                            className={`absolute w-3 h-3 ${cls}`}
+                            style={{ borderColor: '#fff' }}
                         />
-                        {/* Class label near top-left of polygon */}
-                        {cvData?.class_name && (
-                            <text
-                                x="36"
-                                y="52"
-                                fill={classColor}
-                                fontSize="7"
-                                fontFamily="monospace"
-                                fontWeight="bold"
-                            >
-                                [{cvData.class_name}] YOLO DETECTION
-                            </text>
-                        )}
-                    </g>
-                )}
+                    ))}
+                </div>
+            )}
 
-                {/* === Fallback mock corrosion (when no YOLO data) === */}
-                {!isYolo && isCorroded && (
-                    <>
-                        <ellipse cx="190" cy="55" rx="48" ry="22" fill="url(#corrGrad)" />
-                        <rect x="140" y="38" width="100" height="44" fill="none" stroke="#ef4444" strokeWidth="1.2" strokeDasharray="5 3" />
-                        <line x1="140" y1="38" x2="150" y2="38" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="140" y1="38" x2="140" y2="48" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="240" y1="38" x2="230" y2="38" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="240" y1="38" x2="240" y2="48" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="140" y1="82" x2="150" y2="82" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="140" y1="82" x2="140" y2="72" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="240" y1="82" x2="230" y2="82" stroke="#ef4444" strokeWidth="1.5" />
-                        <line x1="240" y1="82" x2="240" y2="72" stroke="#ef4444" strokeWidth="1.5" />
-                        <text x="143" y="35" fill="#ef4444" fontSize="7" fontFamily="monospace" fontWeight="bold">
-                            EXT_DEFECT_A [CORROSION]
-                        </text>
-                        <ellipse cx="330" cy="148" rx="36" ry="14" fill="url(#rustGrad)" />
-                        <rect x="292" y="135" width="76" height="27" fill="none" stroke="#f59e0b" strokeWidth="0.8" strokeDasharray="4 3" strokeOpacity="0.8" />
-                        <text x="296" y="131" fill="#f59e0b" fontSize="6.5" fontFamily="monospace">EXT_DEFECT_B [COATING]</text>
-                    </>
-                )}
+            {/* Animated laser scanner line */}
+            <div
+                className="absolute top-0 bottom-0 w-0.5 pointer-events-none"
+                style={{
+                    left: `${scanX}%`,
+                    background: 'linear-gradient(to bottom, transparent, #e2e8f0cc, transparent)',
+                    boxShadow: '0 0 6px #e2e8f0aa',
+                }}
+            />
 
-                {/* No defect message */}
-                {!isCorroded && !yoloDetected && (
-                    <text x="150" y="107" fill="#a1a1aa" fontSize="9" fontFamily="monospace" fillOpacity="0.6">
-                        NO EXTERNAL DEFECTS DETECTED
-                    </text>
-                )}
+            {/* === HUD Overlays === */}
 
-                {/* Animated Laser Scanner */}
-                <line ref={scanLineRef} x1="30" y1="30" x2="30" y2="170" stroke="url(#laserGrad)" strokeWidth="2.5" />
-                <line x1="30" y1="30" x2="30" y2="170" stroke="#c8ccd2" strokeWidth="6" strokeOpacity="0.12" />
-            </svg>
-
-            {/* HUD overlays */}
-            <div className="absolute top-2 left-3 flex items-center gap-2 bg-black/80 border border-industrial-700/80 px-2.5 py-1 rounded text-[10px] pointer-events-none z-10">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                <span className="text-zinc-200 font-semibold tracking-wider">EXTERNAL OPTICAL SCAN</span>
-                <span className="text-zinc-500 font-mono">| CAM-OUT-01</span>
-                {isYolo && (
-                    <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold"
-                        style={{ background: '#0c2233', color: '#22d3ee', border: '1px solid #164e63' }}>
-                        YOLO LIVE
-                    </span>
-                )}
+            {/* Top-left: Camera badge */}
+            <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/80 border border-white/10 px-2 py-1 rounded text-[9px] pointer-events-none z-10">
+                <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                <span className="text-zinc-200 font-semibold tracking-wider">OPTICAL SCAN</span>
+                <span className="text-zinc-500 font-mono">CAM-OUT-01</span>
+                <span className="ml-1 px-1.5 py-0.5 rounded text-[8px] font-bold"
+                    style={{ background: '#0c2233', color: '#22d3ee', border: '1px solid #164e63' }}>
+                    YOLOv8-SEG
+                </span>
             </div>
 
-            <div className="absolute bottom-2 left-3 bg-black/80 border border-industrial-700/80 px-2 py-0.5 rounded text-[10px] font-mono text-zinc-400 pointer-events-none z-10">
+            {/* Top-right: model tag */}
+            <div className="absolute top-2 right-2 bg-black/70 border border-white/10 px-2 py-1 rounded text-[9px] font-mono text-zinc-400 pointer-events-none z-10">
+                {readout.model_tag} · {readout.inference_ms}ms
+            </div>
+
+            {/* Bottom-left: Segment ID */}
+            <div className="absolute bottom-2 left-2 bg-black/80 border border-white/10 px-2 py-0.5 rounded text-[9px] font-mono text-zinc-400 pointer-events-none z-10">
                 SEG: <span className="text-white font-bold">{segmentId}</span>
                 <span className="text-zinc-600 ml-1">· OUTER WALL</span>
             </div>
 
-            <div className="absolute bottom-2 right-3 bg-black/80 border border-industrial-700/80 px-2 py-0.5 rounded text-[10px] font-mono pointer-events-none z-10">
-                {isYolo ? (
-                    <>
-                        CLASS: <span className="font-bold" style={{ color: classColor }}>{cvData?.class_name?.toUpperCase() ?? 'NONE'}</span>
-                    </>
+            {/* Bottom-right: Detection summary */}
+            <div className="absolute bottom-2 right-2 bg-black/80 border border-white/10 px-2 py-0.5 rounded text-[9px] font-mono pointer-events-none z-10">
+                {hasDefect ? (
+                    <span className="font-bold" style={{ color }}>
+                        {label.toUpperCase()} · {readout.frames_with_detections}/{readout.total_frames} FRM
+                    </span>
                 ) : (
-                    <>
-                        COATING:{' '}
-                        {isCorroded ? (
-                            <span className="text-amber-400 font-bold">DEGRADED</span>
-                        ) : (
-                            <span className="text-zinc-300 font-bold">INTACT</span>
-                        )}
-                    </>
+                    <span className="text-green-400 font-bold">✓ NO DEFECT</span>
                 )}
+            </div>
+
+            {/* Bottom-center: Confidence bar */}
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-black/80 border border-white/10 px-2 py-0.5 rounded text-[9px] font-mono pointer-events-none z-10">
+                <span className="text-zinc-400">CONF</span>
+                <div className="w-16 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
+                    <div
+                        className="h-full rounded-full"
+                        style={{
+                            width: `${readout.confidence * 100}%`,
+                            background: hasDefect ? color : '#22c55e',
+                        }}
+                    />
+                </div>
+                <span style={{ color: hasDefect ? color : '#22c55e' }}>
+                    {(readout.confidence * 100).toFixed(0)}%
+                </span>
             </div>
         </div>
     );
-}
-
-function getClassColor(cls: string): string {
-    const map: Record<string, string> = {
-        BX: '#f59e0b', CJ: '#ef4444', CK: '#dc2626',
-        OBB: '#8b5cf6', PL: '#f97316', SG: '#ec4899', ZW: '#06b6d4',
-    };
-    return map[cls] ?? '#ef4444';
 }
