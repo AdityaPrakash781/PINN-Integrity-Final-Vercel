@@ -211,7 +211,6 @@ export default function ExternalSurfaceFeed({ segmentId }: { segmentId: string }
     const hasDefect = activeClass !== 'none';
 
     // Scanner animation
-    const scanLineRef = useRef<HTMLDivElement>(null);
     const scanFrameRef = useRef<number>(0);
     const startRef = useRef<number | null>(null);
     const [scanX, setScanX] = useState(0);

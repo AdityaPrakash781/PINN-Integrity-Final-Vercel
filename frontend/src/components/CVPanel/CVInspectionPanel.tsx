@@ -45,8 +45,22 @@ export default function CVInspectionPanel() {
         setIsAnalyzing(true);
         setAnalyzeError(null);
 
+        // Live YOLO inference requires the Express backend (not available on Vercel).
+        // If VITE_API_URL is set, attempt to call the real endpoint.
+        const apiBase = import.meta.env.VITE_API_URL ?? '';
+        if (!apiBase) {
+            // Static / Vercel deployment — simulate a brief "analysis" delay then show info
+            await new Promise(r => setTimeout(r, 1200));
+            setIsAnalyzing(false);
+            setAnalyzeError(
+                '⚙ Live YOLO inference requires the backend server. ' +
+                'Pre-computed detections are already shown below.'
+            );
+            return;
+        }
+
         try {
-            const res = await fetch('http://localhost:3001/api/cv/analyze', {
+            const res = await fetch(`${apiBase}/api/cv/analyze`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ segment_id: selectedSegmentId }),
@@ -58,7 +72,6 @@ export default function CVInspectionPanel() {
             }
 
             const result = await res.json();
-            // Patch local store immediately (WebSocket will also update, but this is instant)
             if (result.success && result.cv) {
                 updateSegment(selectedSegmentId, { cv: result.cv });
             }
